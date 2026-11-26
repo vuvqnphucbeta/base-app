@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "575443584339",
+    "project_id": "android-file-transfer-hk",
+    "storage_bucket": "android-file-transfer-hk.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:575443584339:android:c8b0f588b57bbd63abcda6",
+        "android_client_info": {
+          "package_name": "com.beta.soft"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAVDJ6NiLdnT7KOzmxrN933SvZCSjRhwas"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

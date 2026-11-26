@@ -1,0 +1,154 @@
+name: Android CI/CD
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # git tag v1.0.0 => git push origin v1.0.0
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Configure build properties
+        env:
+          PRIVATE_MAVEN_TOKEN: ${{ secrets.KEY_PACKAGE_GIT }}
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          {
+            printf 'keyPackageGit=%s\n' "$PRIVATE_MAVEN_TOKEN"
+            printf 'APP_ID=%s\n' "$APP_ID"
+          } > local.properties
+
+      - name: Build and run unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Notify chat room (CI success)
+        if: success()
+        env:
+          API_BASE: https://api.asona.ai/api/1.0.0
+          CHAT_WEBHOOK_TOKEN: ${{ secrets.CI_CHAT_WEBHOOK_TOKEN }}
+        run: |
+          curl -sS -X POST "$API_BASE/integrations/chat/messages" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CHAT_WEBHOOK_TOKEN" \
+            -d "{\"content\":\"CI passed for ${GITHUB_REPOSITORY} (${GITHUB_REF_NAME})\"}"
+
+      - name: Notify chat room (CI failed)
+        if: failure()
+        env:
+          API_BASE: https://api.asona.ai/api/1.0.0
+          CHAT_WEBHOOK_TOKEN: ${{ secrets.CI_CHAT_WEBHOOK_TOKEN }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST "$API_BASE/integrations/chat/messages" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CHAT_WEBHOOK_TOKEN" \
+            -d "{\"content\":\"CI failed for ${GITHUB_REPOSITORY} (${GITHUB_REF_NAME}). Run: ${RUN_URL}\"}"
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Configure signing and build properties
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          PRIVATE_MAVEN_TOKEN: ${{ secrets.KEY_PACKAGE_GIT }}
+          APP_ID: ${{ secrets.APP_ID }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+        run: |
+          test -n "$SIGNING_KEYSTORE_BASE64" || { echo 'Missing SIGNING_KEYSTORE_BASE64'; exit 1; }
+          test -n "$SIGNING_KEYSTORE_PASSWORD" || { echo 'Missing SIGNING_KEYSTORE_PASSWORD'; exit 1; }
+          test -n "$SIGNING_KEY_ALIAS" || { echo 'Missing SIGNING_KEY_ALIAS'; exit 1; }
+          test -n "$SIGNING_KEY_PASSWORD" || { echo 'Missing SIGNING_KEY_PASSWORD'; exit 1; }
+          test -n "$PLAY_SERVICE_ACCOUNT_JSON" || { echo 'Missing SERVICE_ACCOUNT_JSON'; exit 1; }
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > app/release-key.jks
+          {
+            printf 'storeFile=release-key.jks\n'
+            printf 'storePassword=%s\n' "$SIGNING_KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$SIGNING_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$SIGNING_KEY_PASSWORD"
+            printf 'keyPackageGit=%s\n' "$PRIVATE_MAVEN_TOKEN"
+            printf 'APP_ID=%s\n' "$APP_ID"
+          } > local.properties
+
+      - name: Build release bundle
+        run: ./gradlew --no-daemon bundleRelease
+
+      - name: Publish to Google Play internal track
+        id: upload
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          packageName: com.beta.soft
+          releaseFiles: app/build/outputs/bundle/release/app-release.aab
+          tracks: internal
+          status: completed
+
+      - name: Upload bundle to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" app/build/outputs/bundle/release/app-release.aab --generate-notes
+
+      - name: Notify chat room (release success)
+        if: success()
+        env:
+          API_BASE: https://api.asona.ai/api/1.0.0
+          CHAT_WEBHOOK_TOKEN: ${{ secrets.CI_CHAT_WEBHOOK_TOKEN }}
+        run: |
+          curl -sS -X POST "$API_BASE/integrations/chat/messages" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CHAT_WEBHOOK_TOKEN" \
+            -d "{\"content\":\"Version ${GITHUB_REF_NAME} released successfully for ${GITHUB_REPOSITORY}\"}"
+
+      - name: Notify chat room (release failed)
+        if: failure()
+        env:
+          API_BASE: https://api.asona.ai/api/1.0.0
+          CHAT_WEBHOOK_TOKEN: ${{ secrets.CI_CHAT_WEBHOOK_TOKEN }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST "$API_BASE/integrations/chat/messages" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CHAT_WEBHOOK_TOKEN" \
+            -d "{\"content\":\"Version ${GITHUB_REF_NAME} failed to release for ${GITHUB_REPOSITORY}. Run: ${RUN_URL}\"}"
